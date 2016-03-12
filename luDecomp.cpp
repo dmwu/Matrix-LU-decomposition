@@ -4,13 +4,14 @@
 #include <omp.h>
 #include "Matrix.h"
 struct Pair{ double val; int pos; };
+#pragma omp declare reduction (max: struct Pair: omp_out = omp_out.val > omp_in.val? omp_out:omp_in)
 void print(double** data, int n,const char*);
 double** formulatep(int* p, int n);
 double** formulatel(double** data, int n);
 double** formulateu(double** data, int n);
 double l21normAndDestruct(double**,double**,double**,double**,int);
 void freeMatrix(double**data, int n);
-
+int PARALLEL_Limit=100;
 int main (int argc, char *argv[]){
     int n, nthreads, seed,tid,maxRow;
     struct drand48_data drand_buf;
@@ -22,11 +23,6 @@ int main (int argc, char *argv[]){
     for(int i = 0; i < n; i++)
     	P[i] = i;
     omp_set_num_threads (nthreads);
-    int rowsDivision = n/nthreads;
-    int lastDivision = rowsDivision;
-    if(rowsDivision*nthreads != n){
-    	lastDivision = n-rowsDivision*nthreads + rowsDivision;
-    }
     double** data = new double*[n];
     double** dataCopy = new double*[n];
     t0 = omp_get_wtime();
@@ -39,13 +35,10 @@ int main (int argc, char *argv[]){
 	{
 		  tid = omp_get_thread_num();	 
 		  seed = tid*111237;
-		  srand48_r (seed, &drand_buf);
+		  srand48_r(seed, &drand_buf);
 		  double xx =0;
-		  int i =0;
-		  #pragma omp parallel for \
-		   private(i,xx) \
-		   schedule(static)
-		  for (i= 0; i < n; i++){
+		  #pragma omp parallel for
+		  for (int i= 0; i < n; i++){
 		  	data[i] = new double[n];
 		  	dataCopy[i] = new double[n];
 		  	for(int j = 0; j < n; j++){
@@ -56,38 +49,37 @@ int main (int argc, char *argv[]){
 		  }
 	}
 
-	#pragma omp declare reduction (max: struct Pair: omp_out = omp_out.val > omp_in.val? omp_out:omp_in)
+	
     /*start LU decomposition*/
     for(int k = 0; k < n; k++){
 
 	 	struct Pair pair;
+	 	pair.val = data[k][k];
+	 	pair.pos = k;
 	 	/*a parallel region that pivoting*/
-	 	#pragma omp parallel \
-	 			firstprivate(k,n) \
-	 			shared(data)
+	 	#pragma omp parallel if(n-k >= PARALLEL_Limit) firstprivate(k,n) shared(data) 
 	 	{
-	 		pair.val = data[k][k];
-	 		pair.pos = k;
-	 		#pragma omp for reduction(max:pair) schedule(static)
+	 	 	#pragma omp parallel for reduction(max:pair) 
 		 	for(int i = k; i < n; i++){
-		   		if( pair.val < std::abs(data[i][k]) ) {
+		   		if( pair.val < std::abs(data[i][k]) ){
 		   			pair.val = std::abs(data[i][k]);
 		   			pair.pos = i;
 		   		}
+		   		printf("i'm ID %d i find max row %d, %f\n", omp_get_thread_num(), pair.pos, pair.val);
 		 	}
-		 }
 
+		}
+		
 		if(pair.val <=0){
 			perror("singular matrix");
 			exit(-1);
 		}
 		maxRow = pair.pos;
-    
-	//	printf("max row %d, val %f\n", pair.pos,pair.val);
+		printf("max row %d, val %f\n", pair.pos,pair.val);
 			/*
 			 * swap permutation matrix P pivoting data matrix data	
 			 */
-		//print(data,n,"data before swap");
+		print(data,n,"data before swap");
 		if (maxRow != k){
 			int temp = P[k];
 			P[k] = P[maxRow];
@@ -97,31 +89,32 @@ int main (int argc, char *argv[]){
 				double tempp = data[k][i];
 				data[k][i] = data[maxRow][i];
 				data[maxRow][i] = tempp;
-			}
-			
+			}			
 		}
-		//print(data,n,"data after swap");
+
+		print(data,n,"data after swap");
 		
-
 		pivot = data[k][k];
-		#pragma omp parallel firstprivate(k,n,pivot) shared(data)
+		#pragma omp parallel if(n-k >= PARALLEL_Limit) firstprivate(k,n,pivot) shared(data)
 		{
-			int i = 0;
-
-			#pragma omp for 
-			for(i = k+1; i < n; i++){
+			
+			#pragma omp for
+			for(int i = k+1; i < n; i++){
 				data[i][k] = data[i][k]/pivot;
 			}
+		}
 
+		#pragma omp parallel if(n-k >= PARALLEL_Limit) firstprivate(k,n,pivot) shared(data)
+		{ 	
 			#pragma omp for
-			for(i = k+1; i < n; i++)
+			for(int i = k+1; i < n; i++)
 				for(int j = k+1; j < n; j++){
 					data[i][j] -= data[k][j]*data[i][k];
 			} 
 		}
 
-
  	}
+
  	t1 = omp_get_wtime();
   	printf("Time: %7.2f\n", t1-t0);
  	double** pmatrix = formulatep(P,n);
@@ -130,14 +123,18 @@ int main (int argc, char *argv[]){
 
  	printf("l21norm: %f\n", l21normAndDestruct(pmatrix, dataCopy,lmatrix,umatrix,n));
  	freeMatrix(data,n);
+ 	freeMatrix(pmatrix,n);
+ 	freeMatrix(lmatrix,n);
+ 	freeMatrix(umatrix,n);
+ 	freeMatrix(dataCopy,n);
   	return 0;
 };
 
 void freeMatrix(double**data, int n){
 	for (int i = 0; i < n; i++){
-		delete data[i];
+		delete[] data[i];
 	}
-	delete data;
+	delete[] data;
 }
 void print(double** data, int n,const char* str){
 	printf("===============================\n");
@@ -193,6 +190,8 @@ double l21normAndDestruct(double** p, double** a, double** l, double** u, int n)
 	Matrix* res1 = (*pp)*(*aa);
 	Matrix* res2 = (*ll)*(*uu);
 	res1 = (*res1)-(*res2);
+	print(res1->matrix,n,"pa");
+	print(res2->matrix,n,"lu");
 	double ret = 0;
 	for (int j = 0; j < n; j++){
 		double col = 0;

@@ -46,8 +46,8 @@ double*& Matrix::operator[](int i)const{
 }
 
 Matrix::~Matrix(){
-	for(int i = 0; i < m; i++){
-		delete matrix[i];
-	}
-	delete matrix;
+	 // for(int i = 0; i < m; i++){
+	 // 	delete this->matrix[i];
+	 // }
+	 // delete this->matrix;
 }
